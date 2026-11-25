@@ -1,0 +1,50 @@
+name: PortMIS public workspace
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: portmis-pages
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify Pages binding and the exact working release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.cname' | grep -Fxq portmis.suaveforge.com
+          curl -fsS --max-time 15 https://api-portmis.suaveforge.com:19448/health | grep -q evaluation
+          curl -fsS --max-time 15 https://api-portmis.suaveforge.com:19448/app.js -o /tmp/portmis-app-$GITHUB_RUN_ID.js
+          cmp site/app.js /tmp/portmis-app-$GITHUB_RUN_ID.js
+          rm /tmp/portmis-app-$GITHUB_RUN_ID.js
+      - name: Configure only the verified PortMIS CNAME
+        run: bash scripts/configure-frontend-dns.sh
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: verify
+    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy verified public workspace
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify root HTTPS
+        run: |
+          curl -fsS --retry 8 --retry-delay 8 --max-time 15 https://portmis.suaveforge.com/ | grep -Fq 'PortMIS | Funafuti Port Operations'
+          echo PORTMIS_ROOT_HTTPS=PASS
