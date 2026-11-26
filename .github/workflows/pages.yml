@@ -1,50 +1,36 @@
-name: PortMIS public workspace
+name: PortMIS custom hostname verification
 on:
   push:
     branches: [main]
+    paths: [CNAME, .github/workflows/pages.yml]
   workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
-concurrency:
-  group: portmis-pages
-  cancel-in-progress: false
+  pages: read
 jobs:
-  verify:
+  dns:
     runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify Pages binding and the exact working release
+      - name: Configure only PortMIS custom hostname using existing registrar workflow
+        run: bash scripts/configure-frontend-dns.sh
+      - name: Confirm custom hostname and actual HTTPS page
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.cname' | grep -Fxq portmis.suaveforge.com
-          curl -fsS --max-time 15 https://api-portmis.suaveforge.com:19448/health | grep -q evaluation
-          curl -fsS --max-time 15 https://api-portmis.suaveforge.com:19448/app.js -o /tmp/portmis-app-$GITHUB_RUN_ID.js
-          cmp site/app.js /tmp/portmis-app-$GITHUB_RUN_ID.js
-          rm /tmp/portmis-app-$GITHUB_RUN_ID.js
-      - name: Configure only the verified PortMIS CNAME
-        run: bash scripts/configure-frontend-dns.sh
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-  deploy:
-    needs: verify
-    runs-on: [self-hosted, Linux, X64, server123, suaveforge-deploy, suaveforge-org]
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy verified public workspace
-        id: deployment
-        uses: actions/deploy-pages@v4
-      - name: Verify root HTTPS
-        run: |
-          curl -fsS --retry 8 --retry-delay 8 --max-time 15 https://portmis.suaveforge.com/ | grep -Fq 'PortMIS | Funafuti Port Operations'
-          echo PORTMIS_ROOT_HTTPS=PASS
+          test "$(cat CNAME)" = portmis.suaveforge.com
+          gh api "repos/$GITHUB_REPOSITORY/pages" --jq '{cname,https_enforced,certificate_state:(.https_certificate.state // "unknown")}'
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 10 https://portmis.suaveforge.com/ | grep -Fq 'PortMIS | Funafuti Port Operations'; then
+              curl -fsS --max-time 15 https://portmis.suaveforge.com/app.js -o /tmp/portmis-pages-$GITHUB_RUN_ID.js
+              cmp app.js /tmp/portmis-pages-$GITHUB_RUN_ID.js
+              rm /tmp/portmis-pages-$GITHUB_RUN_ID.js
+              echo PORTMIS_ROOT_HTTPS=PASS; exit 0
+            fi
+            sleep 15
+          done
+          exit 1
